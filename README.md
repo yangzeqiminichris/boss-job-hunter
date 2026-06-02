@@ -23,21 +23,26 @@ playwright install chromium
 
 ## 配置到 Claude Code
 
-编辑 `~/.claude/claude_desktop_config.json`（或你的 AI 客户端 MCP 配置文件）：
+使用 `claude mcp add` 命令一行完成配置（推荐）：
 
-```json
-{
-  "mcpServers": {
-    "boss-job-hunter": {
-      "command": "python",
-      "args": ["-m", "boss_job_hunter.server"],
-      "cwd": "/path/to/boss-job-hunter"
-    }
-  }
-}
+**macOS / Linux：**
+```bash
+claude mcp add boss-job-hunter -s user -- python -m boss_job_hunter.server
 ```
 
-> **提示：** 如果 `python` 不在 PATH，请使用完整路径，例如 `C:\Users\yourname\miniconda3\python.exe`
+**Windows（使用 conda/miniconda）：**
+```powershell
+claude mcp add boss-job-hunter -s user -- C:\Users\yourname\miniconda3\python.exe -m boss_job_hunter.server
+```
+
+> **说明：**
+> - `-s user` 表示写入用户级配置（`~/.claude.json`），对所有项目生效
+> - `--` 后面是完整的启动命令，避免 `-m` 被 claude 误解析
+> - 如果 `python` 不在 PATH（Windows 常见），请使用 Python 完整路径
+
+配置完成后重启 Claude Code，输入 `/mcp` 确认 `boss-job-hunter` 状态为 Connected。
+
+> **注意：** MCP 配置写入 `~/.claude.json`，不是 `~/.claude/settings.json`。两个文件用途不同，请勿混淆。
 
 ## 使用
 
@@ -46,10 +51,17 @@ playwright install chromium
 在 Claude 中说：
 > 帮我登录 Boss直聘
 
-Claude 会打开一个浏览器窗口，在里面正常登录（扫码或账号密码均可），登录成功后浏览器自动关闭，Cookie 保存到本地。
+Claude 会以远程调试模式打开一个独立的 Chrome 窗口，在里面正常登录（扫码或账号密码均可）。
 
-或者，如果你知道如何从浏览器 DevTools 获取 Cookie：
-> 用这个 Cookie 登录：`token=xxx; wt2=yyy; ...`
+登录成功后说：
+> 读取 Cookie
+
+Claude 会通过 Chrome 远程调试协议（CDP）静默读取 Cookie 并保存，**不需要打开 DevTools，不会被 Boss直聘 检测到**。
+
+> **说明：** Chrome 会使用独立的临时 Profile（`C:\Temp\chrome-debug-profile`），与你日常使用的 Chrome 互不干扰。每次登录都需要重新扫码/输入密码。
+
+如需重新登录，先清除 Cookie：
+> 帮我退出登录
 
 **第二步：搜索职位**
 
@@ -115,14 +127,18 @@ Claude 会打开一个浏览器窗口，在里面正常登录（扫码或账号�
 
 **Windows：**
 ```powershell
-$dest = "$env:USERPROFILE\.claude\plugins\cache\claude-plugins-official\superpowers\5.1.0\skills\boss-job-hunter"
+# 找到 superpowers 插件目录（版本号可能不同）
+$superpowers = Get-ChildItem "$env:USERPROFILE\.claude\plugins\cache\claude-plugins-official\superpowers" | Sort-Object Name -Descending | Select-Object -First 1 -ExpandProperty FullName
+$dest = "$superpowers\skills\boss-job-hunter"
 New-Item -ItemType Directory -Force $dest
 Copy-Item "skill\SKILL.md" $dest
 ```
 
 **macOS / Linux：**
 ```bash
-DEST="$HOME/.claude/plugins/cache/claude-plugins-official/superpowers/5.1.0/skills/boss-job-hunter"
+# 找到 superpowers 插件目录（版本号可能不同）
+SUPERPOWERS=$(ls -d ~/.claude/plugins/cache/claude-plugins-official/superpowers/*/ | sort -V | tail -1)
+DEST="${SUPERPOWERS}skills/boss-job-hunter"
 mkdir -p "$DEST"
 cp skill/SKILL.md "$DEST/"
 ```
@@ -135,7 +151,13 @@ cp skill/SKILL.md "$DEST/"
 ## 常见问题
 
 **Q: 搜索提示 "Cookie 已失效"**  
-A: 重新运行登录流程即可。
+A: 依次说"帮我退出登录"和"帮我登录 Boss直聘"，完成重新登录后说"读取 Cookie"。
+
+**Q: 登录时浏览器一直跳回空白页**  
+A: 这是 Boss直聘 的反爬检测。请确保使用"帮我登录 Boss直聘"命令打开的 Chrome（会以独立 Profile + 调试模式启动），不要手动打开 Chrome 去登录。
+
+**Q: 说"读取 Cookie"时提示连接失败**  
+A: Chrome 调试端口未就绪。重新说"帮我登录 Boss直聘"让 Claude 重新打开浏览器，再登录后读取。
 
 **Q: 搜索没有结果**  
 A: 尝试降低 `salary_overlap`（如设为 0.3），或放宽 `hr_active_within_days`（如设为 14）。

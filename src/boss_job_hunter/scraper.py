@@ -67,9 +67,9 @@ async def scrape_jobs(
     mianyi_pairs: list[tuple[Company, str]] = []
 
     async with async_playwright() as p:
-        browser = await p.chromium.launch(headless=True)
-        context: BrowserContext = await browser.new_context()
-        await context.add_cookies(cookies)
+        browser = await p.chromium.connect_over_cdp("http://localhost:9222")
+        context = browser.contexts[0]
+        page = context.pages[0]
 
         for page_num in range(1, max_pages + 1):
             await rate_limited_delay()
@@ -77,8 +77,20 @@ async def scrape_jobs(
                 f"{BOSS_URL}/web/geek/job?"
                 f"query={quote(keyword)}&city={city_code}&page={page_num}"
             )
-            page = await context.new_page()
-            await page.goto(url, wait_until="networkidle")
+
+            # Navigate and wait — Boss直聘 may do a security redirect, keep retrying
+            for attempt in range(3):
+                await page.evaluate(f"window.location.href = '{url}'")
+                await asyncio.sleep(4)
+                current = page.url
+                if "geek/job" in current or "zhipin.com/web" in current:
+                    break
+                if attempt == 2:
+                    raise AuthExpiredError(
+                        "Boss直聘 持续重定向，请在 Chrome 中手动打开搜索页后重试"
+                    )
+                await asyncio.sleep(2)
+
             await _check_page_valid(page)
 
             job_cards = await page.query_selector_all(".job-card-wrapper")
@@ -93,13 +105,9 @@ async def scrape_jobs(
                     else:
                         mianyi_pairs.append((company, job_or_salary))
                 except Exception:
-                    continue  # skip malformed cards
+                    continue
 
-            await page.close()
-            # Random delay between pages
             await asyncio.sleep(random.uniform(1.0, 3.0))
-
-        await browser.close()
 
     return parsed_pairs, mianyi_pairs
 

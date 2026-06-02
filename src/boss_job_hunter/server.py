@@ -10,6 +10,8 @@ from mcp import types
 from boss_job_hunter.auth import (
     login_via_browser,
     login_via_cookie_string,
+    login_from_chrome_db,
+    COOKIE_PATH,
 )
 from boss_job_hunter.scraper import scrape_jobs, AuthExpiredError, CaptchaError
 from boss_job_hunter.filters import filter_job, group_and_sort, size_order
@@ -29,8 +31,8 @@ async def list_tools() -> list[types.Tool]:
                 "properties": {
                     "method": {
                         "type": "string",
-                        "enum": ["browser", "cookie"],
-                        "description": "登录方式",
+                        "enum": ["browser", "chrome_db", "cookie"],
+                        "description": "登录方式：browser=打开Chrome登录页（需关闭Chrome后用chrome_db读取）；chrome_db=从本机Chrome数据库读取Cookie（登录后关闭Chrome再用）；cookie=直接粘贴Cookie字符串",
                     },
                     "cookie_string": {
                         "type": "string",
@@ -39,6 +41,28 @@ async def list_tools() -> list[types.Tool]:
                 },
                 "required": ["method"],
             },
+        ),
+        types.Tool(
+            name="read_current_page",
+            description="读取当前 Chrome 页面上的职位列表并按条件过滤。在用户手动搜索并看到结果后调用。",
+            inputSchema={
+                "type": "object",
+                "properties": {
+                    "salary_min": {"type": "integer", "description": "目标薪资下限（K）"},
+                    "salary_max": {"type": "integer", "description": "目标薪资上限（K）"},
+                    "salary_overlap": {"type": "number", "default": 0.5},
+                    "posted_within_days": {"type": "integer", "default": 30},
+                    "hr_active_within_days": {"type": "integer", "default": 7},
+                    "company_size": {"type": "array", "items": {"type": "string"}},
+                    "sort_by": {"type": "string", "enum": ["hr_active", "salary", "company_size"], "default": "hr_active"},
+                },
+                "required": ["salary_min", "salary_max"],
+            },
+        ),
+        types.Tool(
+            name="logout",
+            description="清除本地保存的 Boss直聘 Cookie，退出登录状态。",
+            inputSchema={"type": "object", "properties": {}},
         ),
         types.Tool(
             name="search_jobs",
@@ -91,6 +115,12 @@ async def list_tools() -> list[types.Tool]:
 async def call_tool(name: str, arguments: dict) -> list[types.TextContent]:
     if name == "login":
         return await _handle_login(arguments)
+    elif name == "logout":
+        return _handle_logout()
+    elif name == "open_search":
+        return await _handle_open_search(arguments)
+    elif name == "read_current_page":
+        return await _handle_read_current_page(arguments)
     elif name == "search_jobs":
         return await _handle_search(arguments)
     raise ValueError(f"Unknown tool: {name}")
@@ -102,8 +132,19 @@ async def _handle_login(args: dict) -> list[types.TextContent]:
         if method == "browser":
             from playwright.async_api import async_playwright
             async with async_playwright() as p:
-                await login_via_browser(p)
+                try:
+                    await login_via_browser(p)
+                except RuntimeError as e:
+                    return [types.TextContent(type="text", text=str(e))]
             return [types.TextContent(type="text", text="登录成功！Cookie 已保存，可以开始搜索职位了。")]
+        elif method == "chrome_db":
+            from playwright.async_api import async_playwright
+            async with async_playwright() as p:
+                try:
+                    await login_from_chrome_db(p)
+                    return [types.TextContent(type="text", text="已通过 Chrome 远程调试读取 Cookie，登录成功！可以开始搜索了。")]
+                except Exception as e:
+                    return [types.TextContent(type="text", text=f"读取失败：{e}")]
         elif method == "cookie":
             cookie_string = args.get("cookie_string", "")
             if not cookie_string:
@@ -112,6 +153,92 @@ async def _handle_login(args: dict) -> list[types.TextContent]:
             return [types.TextContent(type="text", text="Cookie 已保存，可以开始搜索职位了。")]
     except Exception as e:
         return [types.TextContent(type="text", text=f"登录失败：{e}")]
+
+
+async def _handle_open_search(args: dict) -> list[types.TextContent]:
+    from urllib.parse import quote
+    from boss_job_hunter.scraper import CITY_CODE_MAP
+    keyword = args["keyword"]
+    city = args.get("city", "全国")
+    city_code = CITY_CODE_MAP.get(city, "100010000")
+    url = f"https://www.zhipin.com/web/geek/job?query={quote(keyword)}&city={city_code}"
+    return [types.TextContent(type="text", text=(
+        f"请在已打开的 Chrome 窗口中访问：\n{url}\n\n"
+        f"等搜索结果加载完毕后，告诉我"读取当前页面"。"
+    ))]
+
+
+async def _handle_read_current_page(args: dict) -> list[types.TextContent]:
+    from playwright.async_api import async_playwright
+    from boss_job_hunter.scraper import _parse_card
+    salary_min = args["salary_min"]
+    salary_max = args["salary_max"]
+    salary_overlap = args.get("salary_overlap", 0.5)
+    posted_within = args.get("posted_within_days", 30)
+    hr_within = args.get("hr_active_within_days", 7)
+    company_size_filter = args.get("company_size")
+    sort_by = args.get("sort_by", "hr_active")
+
+    try:
+        async with async_playwright() as p:
+            browser = await p.chromium.connect_over_cdp("http://localhost:9222")
+            ctx = browser.contexts[0]
+            # Find the Boss直聘 job search page
+            page = None
+            for pg in ctx.pages:
+                if "zhipin.com" in pg.url:
+                    page = pg
+                    break
+            if page is None:
+                return [types.TextContent(type="text", text="未找到 Boss直聘 页面，请先在 Chrome 中打开搜索结果页。")]
+
+            job_cards = await page.query_selector_all(".job-card-wrapper")
+            if not job_cards:
+                return [types.TextContent(type="text", text=f"当前页面（{page.url[:80]}）未找到职位卡片，请确认已在搜索结果页。")]
+
+            from boss_job_hunter.models import Company
+            parsed_pairs, mianyi_pairs = [], []
+            for card in job_cards:
+                try:
+                    company, job_or_salary = await _parse_card(card)
+                    if isinstance(job_or_salary, str):
+                        mianyi_pairs.append((company, job_or_salary))
+                    else:
+                        parsed_pairs.append((company, job_or_salary))
+                except Exception:
+                    continue
+
+    except Exception as e:
+        return [types.TextContent(type="text", text=f"读取页面失败：{e}")]
+
+    company_map: dict[str, Company] = {}
+    for company, job in parsed_pairs:
+        if company_size_filter and company.size not in company_size_filter:
+            continue
+        if not filter_job(job, salary_min, salary_max, salary_overlap, posted_within, hr_within):
+            continue
+        if company.name not in company_map:
+            company_map[company.name] = Company(
+                name=company.name, size=company.size, size_order=company.size_order,
+                industry=company.industry, funding=company.funding, welfare_tags=company.welfare_tags,
+            )
+        company_map[company.name].jobs.append(job)
+
+    companies = list(company_map.values())
+    companies = group_and_sort(companies, sort_by)
+
+    if not companies:
+        return [types.TextContent(type="text", text=f"当前页面共 {len(job_cards)} 个职位，过滤后无符合条件的结果。\n建议放宽薪资或活跃时间条件。")]
+
+    result = [asdict(c) for c in companies]
+    return [types.TextContent(type="text", text=json.dumps(result, ensure_ascii=False, indent=2))]
+
+
+def _handle_logout() -> list[types.TextContent]:
+    if COOKIE_PATH.exists():
+        COOKIE_PATH.unlink()
+        return [types.TextContent(type="text", text="Cookie 已清除，已退出登录。")]
+    return [types.TextContent(type="text", text="本地没有保存的 Cookie，无需清除。")]
 
 
 async def _handle_search(args: dict) -> list[types.TextContent]:
