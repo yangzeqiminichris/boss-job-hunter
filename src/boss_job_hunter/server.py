@@ -10,7 +10,6 @@ from mcp import types
 from boss_job_hunter.auth import (
     login_via_browser,
     login_via_cookie_string,
-    load_cookies,
 )
 from boss_job_hunter.scraper import scrape_jobs, AuthExpiredError, CaptchaError
 from boss_job_hunter.filters import filter_job, group_and_sort, size_order
@@ -131,16 +130,15 @@ async def _handle_search(args: dict) -> list[types.TextContent]:
         parsed_pairs, mianyi_pairs = await scrape_jobs(keyword, city)
     except AuthExpiredError as e:
         return [types.TextContent(type="text", text=str(e))]
+    except CaptchaError as e:
+        return [types.TextContent(type="text", text=f"检测到验证码，请稍后重试或重新登录。详情：{e}")]
     except Exception as e:
         return [types.TextContent(type="text", text=f"搜索出错：{e}")]
 
-    # Filter and group
+    # Filter all pairs first, then cap
     company_map: dict[str, Company] = {}
-    total = 0
 
     for company, job in parsed_pairs:
-        if total >= max_results:
-            break
         if company_size_filter and company.size not in company_size_filter:
             continue
         if not filter_job(job, salary_min, salary_max, salary_overlap, posted_within, hr_within):
@@ -152,18 +150,31 @@ async def _handle_search(args: dict) -> list[types.TextContent]:
                 funding=company.funding, welfare_tags=company.welfare_tags,
             )
         company_map[company.name].jobs.append(job)
-        total += 1
 
     companies = list(company_map.values())
     companies = group_and_sort(companies, sort_by)
 
-    # Handle 面议 group
+    # Cap after sorting so max_results applies to the best results
+    total = 0
+    capped_companies = []
+    for c in companies:
+        if total >= max_results:
+            break
+        capped_companies.append(c)
+        total += len(c.jobs)
+    companies = capped_companies
+
+    # Handle 面议 group — also filter by company_size if specified
     mianyi_company = None
-    if mianyi_pairs:
+    filtered_mianyi = [
+        (c, s) for c, s in mianyi_pairs
+        if not company_size_filter or c.size in company_size_filter
+    ]
+    if filtered_mianyi:
         mianyi_company = {"company": "薪资面议", "size": "-", "industry": "-",
                           "funding": "-", "welfare_tags": [],
                           "jobs": [{"title": c.name, "salary": s, "hr_active": "-",
-                                    "posted": "-", "url": ""} for c, s in mianyi_pairs]}
+                                    "posted": "-", "url": ""} for c, s in filtered_mianyi]}
 
     if not companies and not mianyi_company:
         suggestion = (

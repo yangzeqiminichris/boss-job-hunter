@@ -1,12 +1,11 @@
+# src/boss_job_hunter/time_parser.py
 import re
 
-_ACTIVE_MAP = {
+_ACTIVE_EXACT = {
     "刚刚活跃": 0,
     "今日活跃": 1,
-    "3天前活跃": 3,
+    "今天活跃": 1,
     "本周活跃": 7,
-    "2周前活跃": 14,
-    "1个月前活跃": 30,
 }
 
 _POSTED_MAP = {
@@ -16,7 +15,19 @@ _POSTED_MAP = {
 
 def parse_active_days(text: str) -> int:
     """Return days since HR was last active. 999 if unknown."""
-    return _ACTIVE_MAP.get(text.strip(), 999)
+    text = text.strip()
+    if text in _ACTIVE_EXACT:
+        return _ACTIVE_EXACT[text]
+    m = re.match(r"(\d+)天前活跃", text)
+    if m:
+        return int(m.group(1))
+    m = re.match(r"(\d+)周前活跃", text)
+    if m:
+        return int(m.group(1)) * 7
+    m = re.match(r"(\d+)个月前活跃", text)
+    if m:
+        return int(m.group(1)) * 30
+    return 999
 
 
 def parse_posted_days(text: str) -> int:

@@ -34,7 +34,7 @@ async def login_via_browser(playwright_instance) -> list[dict]:
     # Poll until URL no longer contains the login path
     for _ in range(120):  # wait up to 120 seconds
         await page.wait_for_timeout(1000)
-        if "user" not in page.url or "login" not in page.url:
+        if "user" not in page.url and "login" not in page.url:
             break
     else:
         await browser.close()

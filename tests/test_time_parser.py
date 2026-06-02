@@ -1,3 +1,4 @@
+# tests/test_time_parser.py
 import pytest
 from boss_job_hunter.time_parser import parse_active_days, parse_posted_days
 
@@ -8,8 +9,14 @@ def test_just_active():
 def test_today_active():
     assert parse_active_days("今日活跃") == 1
 
+def test_today_active_alt():
+    assert parse_active_days("今天活跃") == 1
+
 def test_three_days_active():
     assert parse_active_days("3天前活跃") == 3
+
+def test_five_days_active():
+    assert parse_active_days("5天前活跃") == 5
 
 def test_this_week_active():
     assert parse_active_days("本周活跃") == 7
@@ -19,6 +26,9 @@ def test_two_weeks_active():
 
 def test_one_month_active():
     assert parse_active_days("1个月前活跃") == 30
+
+def test_two_months_active():
+    assert parse_active_days("2个月前活跃") == 60
 
 def test_unknown_active_returns_999():
     assert parse_active_days("很久以前") == 999

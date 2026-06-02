@@ -5,6 +5,7 @@ Returns raw list of (Company, Job) pairs before filtering.
 """
 import random
 import asyncio
+from urllib.parse import quote
 from playwright.async_api import async_playwright, BrowserContext, Page
 
 from boss_job_hunter.auth import load_cookies, BOSS_URL
@@ -74,7 +75,7 @@ async def scrape_jobs(
             await rate_limited_delay()
             url = (
                 f"{BOSS_URL}/web/geek/job?"
-                f"query={keyword}&city={city_code}&page={page_num}"
+                f"query={quote(keyword)}&city={city_code}&page={page_num}"
             )
             page = await context.new_page()
             await page.goto(url, wait_until="networkidle")
