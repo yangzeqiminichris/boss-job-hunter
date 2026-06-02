@@ -109,6 +109,29 @@ Claude 会打开一个浏览器窗口，在里面正常登录（扫码或账号�
 ]
 ```
 
+## 安装 Skill（可选，推荐）
+
+安装 Skill 后，你可以直接对 Claude 说"帮我找工作"，不需要手动指定参数格式。
+
+**Windows：**
+```powershell
+$dest = "$env:USERPROFILE\.claude\plugins\cache\claude-plugins-official\superpowers\5.1.0\skills\boss-job-hunter"
+New-Item -ItemType Directory -Force $dest
+Copy-Item "skill\SKILL.md" $dest
+```
+
+**macOS / Linux：**
+```bash
+DEST="$HOME/.claude/plugins/cache/claude-plugins-official/superpowers/5.1.0/skills/boss-job-hunter"
+mkdir -p "$DEST"
+cp skill/SKILL.md "$DEST/"
+```
+
+重启 Claude Code 后，直接说：
+> 帮我在上海找 Java 工程师，薪资 20-30K
+
+---
+
 ## 常见问题
 
 **Q: 搜索提示 "Cookie 已失效"**  
